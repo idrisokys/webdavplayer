@@ -271,6 +271,40 @@ Future<List<DavItem>> propfind(Config cfg, Uri dir) async {
   }
 }
 
+/// Takili harici depolamalar (USB HDD / SD kart): /storage/<UUID> yollari.
+List<Directory> findExternalVolumes() {
+  final paths = <String>{};
+  void add(String p) {
+    p = p.replaceAll(RegExp(r'/+$'), '');
+    final name = p.substring(p.lastIndexOf('/') + 1);
+    if (name.isEmpty || name == 'emulated' || name == 'self') return;
+    paths.add(p);
+  }
+
+  try {
+    for (final e in Directory('/storage').listSync(followLinks: false)) {
+      add(e.path);
+    }
+  } catch (_) {}
+  try {
+    for (final line in File('/proc/mounts').readAsLinesSync()) {
+      final parts = line.split(' ');
+      if (parts.length > 1 && parts[1].startsWith('/storage/')) {
+        add(parts[1].replaceAll(r'\040', ' '));
+      }
+    }
+  } catch (_) {}
+  final out = <Directory>[];
+  for (final p in paths) {
+    final d = Directory(p);
+    try {
+      if (d.existsSync()) out.add(d);
+    } catch (_) {}
+  }
+  out.sort((a, b) => a.path.compareTo(b.path));
+  return out;
+}
+
 /// Telefon icindeki klasor / video listesi (dart:io).
 Future<List<DavItem>> listLocal(Uri dir) async {
   final items = <DavItem>[];
@@ -1230,7 +1264,19 @@ class _BrowserScreenState extends State<BrowserScreen> {
     var u = widget.start.toString();
     if (!u.endsWith('/')) u = '$u/';
     stack = [Uri.parse(u)];
+    _scanVolumes();
     _load();
+  }
+
+  List<Directory> _volumes = [];
+
+  void _scanVolumes() {
+    if (!Platform.isAndroid) return;
+    try {
+      _volumes = findExternalVolumes();
+    } catch (_) {
+      _volumes = [];
+    }
   }
 
   bool get _atServerRoot => widget.selectMode && stack.length == 1;
@@ -1241,6 +1287,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
     final segs = stack.last.pathSegments.where((s) => s.isNotEmpty).toList();
     if (_isLocal && stack.last.path.replaceAll(RegExp(r'/+$'), '') == _deviceRoot) {
       return 'Cihaz belleği';
+    }
+    if (_isLocal) {
+      final cur = stack.last.toFilePath().replaceAll(RegExp(r'/+$'), '');
+      for (final v in _volumes) {
+        if (v.path == cur) return 'Harici disk (${cur.substring(cur.lastIndexOf('/') + 1)})';
+      }
     }
     return segs.isEmpty ? 'Sunucu' : _decode(segs.last);
   }
@@ -1262,6 +1314,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 
   Future<void> _load() async {
+    if (_atServerRoot) _scanVolumes();
     setState(() {
       loading = true;
       error = null;
@@ -1485,6 +1538,25 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 
+  Widget _volumeRow(Directory v) {
+    final id = v.path.substring(v.path.lastIndexOf('/') + 1);
+    return ListTile(
+      leading: const SizedBox(
+        width: 32,
+        child: Center(
+          child: Icon(Icons.usb, color: Colors.lightBlueAccent, size: 28),
+        ),
+      ),
+      title: const Text('Harici diskten ekle'),
+      subtitle: Text('USB HDD / SD kart ($id)'),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: () async {
+        stack.add(v.uri);
+        await _load();
+      },
+    );
+  }
+
   Widget _errorView() {
     return Padding(
       padding: const EdgeInsets.all(24),
@@ -1561,6 +1633,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
     final pre = <Widget>[
       if (_atServerRoot) _deviceRow(),
       if (_atServerRoot) const Divider(height: 1),
+      if (_atServerRoot)
+        for (final v in _volumes) ...[
+          _volumeRow(v),
+          const Divider(height: 1),
+        ],
     ];
     final List<Widget>? tail = loading
         ? const [

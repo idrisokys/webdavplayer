@@ -18,7 +18,9 @@ parlaklik/ses hareketleri bu surumde yoktur.
   klasor/video sec, "Tumunu sec", **Tasi** veya **Kaldir** (sunucudaki dosyalar silinmez)
 - **TV'yi kapat** (power simgesi): `192.168.1.44:5555` adresine ADB ile `reboot -p` gonderir
 - "Listeye ekle" ekraninin en ustunde **Cihazimdan ekle**: telefondaki klasor ve videolari da ekleyebilirsin
-  (ilk seferde "tum dosyalara erisim" izni istenir)
+  (ilk seferde "tum dosyalara erisim" izni istenir).
+  Cihaza takili **USB HDD / SD kart** da otomatik bulunur: hemen altinda **Harici diskten ekle** satiri cikar
+  (`/storage/<UUID>`; ekrani asagi cekince yeniden taranir)
 - Klasor gezginlerinde varsayilan siralama **en yeni ustte** (sag ustteki siralama simgesinden degisir);
   Izleme Listem ise harf sirasindadir
 - Oynatici: ekrana **basili tut = 2.5x**; sol yarida yukari/asagi kaydir = **parlaklik**,
