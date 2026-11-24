@@ -10,6 +10,8 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xml/xml.dart';
 
+import 'adb.dart';
+
 // ============================================================================
 //  Sabitler / yardimcilar
 // ============================================================================
@@ -20,7 +22,9 @@ const _videoExt = {
 const _watchedRatio = 0.95;
 const _speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
 
-bool get _isMobile => Platform.isAndroid || Platform.isIOS;
+// TV (kapatilacak cihaz) - ADB ag hata ayiklama
+const _tvHost = '192.168.1.44';
+const _tvAdbPort = 5555;
 
 String fmtDur(Duration d) {
   final s = d.inSeconds < 0 ? 0 : d.inSeconds;
@@ -352,6 +356,32 @@ class WatchlistStore extends ChangeNotifier {
     items.removeWhere((e) => e.item.key == key);
     await _save();
   }
+
+  Future<void> moveItems(Set<String> keys, String? folder) async {
+    for (final i in items) {
+      if (keys.contains(i.item.key)) i.folder = folder;
+    }
+    await _save();
+  }
+
+  Future<void> removeItems(Set<String> keys) async {
+    items.removeWhere((e) => keys.contains(e.item.key));
+    await _save();
+  }
+
+  /// [withItems] true ise klasorlerin icindekiler de listeden kalkar,
+  /// false ise ana listeye tasinir.
+  Future<void> deleteFolders(Set<String> ids, {required bool withItems}) async {
+    if (withItems) {
+      items.removeWhere((e) => ids.contains(e.folder));
+    } else {
+      for (final i in items) {
+        if (ids.contains(i.folder)) i.folder = null;
+      }
+    }
+    folders.removeWhere((f) => ids.contains(f.id));
+    await _save();
+  }
 }
 
 // ============================================================================
@@ -592,6 +622,45 @@ class WatchlistScreen extends StatefulWidget {
 class _WatchlistScreenState extends State<WatchlistScreen> {
   final st = WatchlistStore.instance;
 
+  // secim modu
+  bool selecting = false;
+  final Set<String> selFolders = {};
+  final Set<String> selItems = {};
+
+  int get _selCount => selFolders.length + selItems.length;
+
+  void _exitSelect() => setState(() {
+        selecting = false;
+        selFolders.clear();
+        selItems.clear();
+      });
+
+  void _toggleFolder(String id) => setState(() {
+        if (!selFolders.remove(id)) selFolders.add(id);
+      });
+
+  void _toggleItem(String key) => setState(() {
+        if (!selItems.remove(key)) selItems.add(key);
+      });
+
+  bool _allSelected(List<WlFolder> folders, List<WlItem> its) =>
+      (folders.isNotEmpty || its.isNotEmpty) &&
+      folders.every((f) => selFolders.contains(f.id)) &&
+      its.every((w) => selItems.contains(w.item.key));
+
+  void _toggleAll(List<WlFolder> folders, List<WlItem> its) {
+    setState(() {
+      if (_allSelected(folders, its)) {
+        selFolders.clear();
+        selItems.clear();
+      } else {
+        selFolders.addAll(folders.map((f) => f.id));
+        selItems.addAll(its.map((w) => w.item.key));
+      }
+    });
+  }
+
+  // ---- islemler
   Future<void> _newFolder() async {
     final name = await askName(context, 'Yeni klasör');
     if (name != null) await st.createFolder(name);
@@ -622,14 +691,70 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _moveItem(WlItem w) async {
+  Future<void> _moveSelected() async {
+    if (selItems.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Klasörler taşınamaz, taşımak için video seç.'),
+      ));
+      return;
+    }
     final c = await showFolderPicker(
       context,
-      current: w.folder,
-      title: 'Klasöre taşı',
+      current: widget.folderId,
+      title: '${selItems.length} öğeyi taşı',
     );
     if (c == null) return;
-    await st.moveItem(w.item.key, c.id);
+    final n = selItems.length;
+    await st.moveItems(Set.of(selItems), c.id);
+    if (!mounted) return;
+    _exitSelect();
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('$n öğe taşındı')));
+  }
+
+  Future<void> _removeSelected() async {
+    final hasF = selFolders.isNotEmpty;
+    final parts = <String>[
+      if (hasF) '${selFolders.length} klasör',
+      if (selItems.isNotEmpty) '${selItems.length} öğe',
+    ];
+    final r = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Listeden kaldırılsın mı?'),
+        content: Text(
+          '${parts.join(' ve ')} listeden kaldırılacak. '
+          'Sunucudaki dosyalar silinmez.'
+          '${hasF ? '\n\n"İçerikleri koru": klasörlerdeki videolar ana listeye taşınır.' : ''}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('İptal'),
+          ),
+          if (hasF)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'keep'),
+              child: const Text('İçerikleri koru'),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'all'),
+            child: Text(hasF ? 'Hepsini kaldır' : 'Kaldır'),
+          ),
+        ],
+      ),
+    );
+    if (r == null) return;
+    final items = Set.of(selItems);
+    final folders = Set.of(selFolders);
+    if (items.isNotEmpty) await st.removeItems(items);
+    if (folders.isNotEmpty) {
+      await st.deleteFolders(folders, withItems: r == 'all');
+    }
+    if (!mounted) return;
+    _exitSelect();
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Listeden kaldırıldı')));
   }
 
   Future<void> _renameFolder(WlFolder f) async {
@@ -638,12 +763,40 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
     if (name != null) await st.renameFolder(f.id, name);
   }
 
-  Future<void> _deleteFolder(WlFolder f) async {
-    final ok = await askConfirm(context, 'Klasör silinsin mi?',
-        '"${f.name}" silinir. İçindeki öğeler ana listeye taşınır.');
-    if (ok) await st.deleteFolder(f.id);
+  Future<void> _powerOffTv() async {
+    final ok = await askConfirm(
+      context,
+      'TV kapatılsın mı?',
+      '$_tvHost cihazına ADB ile "reboot -p" gönderilecek.',
+    );
+    if (!ok || !mounted) return;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: Row(
+          children: [
+            SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 3)),
+            SizedBox(width: 20),
+            Expanded(
+              child: Text('TV\'ye bağlanılıyor…\nİlk seferde TV ekranında '
+                  '"Her zaman izin ver"i işaretleyip onayla.'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final res = await adbShell(_tvHost, _tvAdbPort, 'reboot -p');
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(res.message)));
   }
 
+  // ---- arayuz
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -655,26 +808,100 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
         final its = st.itemsIn(widget.folderId);
         final empty = folders.isEmpty && its.isEmpty;
 
-        return Scaffold(
-          appBar: AppBar(
-            title: Text(inRoot ? 'İzleme Listem' : (folder?.name ?? 'Klasör')),
-            actions: [
-              if (inRoot)
-                IconButton(
-                  icon: const Icon(Icons.create_new_folder_outlined),
-                  tooltip: 'Yeni klasör',
-                  onPressed: _newFolder,
-                ),
-            ],
+        return PopScope(
+          canPop: !selecting,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) _exitSelect();
+          },
+          child: Scaffold(
+            appBar: selecting
+                ? AppBar(
+                    leading: IconButton(
+                      icon: const Icon(Icons.close),
+                      tooltip: 'Seçim modundan çık',
+                      onPressed: _exitSelect,
+                    ),
+                    title: Text('$_selCount seçili'),
+                    actions: [
+                      IconButton(
+                        icon: Icon(_allSelected(folders, its)
+                            ? Icons.deselect
+                            : Icons.select_all),
+                        tooltip: _allSelected(folders, its)
+                            ? 'Seçimi kaldır'
+                            : 'Tümünü seç',
+                        onPressed: () => _toggleAll(folders, its),
+                      ),
+                    ],
+                  )
+                : AppBar(
+                    title: Text(
+                        inRoot ? 'İzleme Listem' : (folder?.name ?? 'Klasör')),
+                    actions: [
+                      if (inRoot)
+                        IconButton(
+                          icon: const Icon(Icons.power_settings_new),
+                          tooltip: 'TV\'yi kapat',
+                          onPressed: _powerOffTv,
+                        ),
+                      if (inRoot)
+                        IconButton(
+                          icon: const Icon(Icons.create_new_folder_outlined),
+                          tooltip: 'Yeni klasör',
+                          onPressed: _newFolder,
+                        ),
+                      IconButton(
+                        icon: const Icon(Icons.join_inner),
+                        tooltip: 'Seçim modu',
+                        onPressed: empty
+                            ? null
+                            : () => setState(() => selecting = true),
+                      ),
+                    ],
+                  ),
+            floatingActionButton: selecting
+                ? null
+                : FloatingActionButton.extended(
+                    onPressed: _openAdd,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Listeme ekle'),
+                  ),
+            bottomNavigationBar: selecting ? _selectBar() : null,
+            body: empty ? _emptyView() : _list(folders, its),
           ),
-          floatingActionButton: FloatingActionButton.extended(
-            onPressed: _openAdd,
-            icon: const Icon(Icons.add),
-            label: const Text('Listeme ekle'),
-          ),
-          body: empty ? _emptyView() : _list(folders, its),
         );
       },
+    );
+  }
+
+  Widget _selectBar() {
+    final none = _selCount == 0;
+    return Material(
+      elevation: 8,
+      color: Colors.grey.shade900,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              OutlinedButton.icon(
+                onPressed: selItems.isEmpty ? null : _moveSelected,
+                icon: const Icon(Icons.drive_file_move_outline),
+                label: const Text('Taşı'),
+              ),
+              const SizedBox(width: 12),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                    backgroundColor: Colors.red.shade700),
+                onPressed: none ? null : _removeSelected,
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('Kaldır'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -703,6 +930,8 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
       children: [
         for (final f in folders)
           ListTile(
+            selected: selFolders.contains(f.id),
+            selectedTileColor: Colors.white12,
             leading: const SizedBox(
               width: 32,
               child: Center(
@@ -710,22 +939,40 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
             ),
             title: Text(f.name, maxLines: 2, overflow: TextOverflow.ellipsis),
             subtitle: Text('${st.countIn(f.id)} öğe'),
-            trailing: PopupMenuButton<String>(
-              onSelected: (v) {
-                if (v == 'rename') _renameFolder(f);
-                if (v == 'delete') _deleteFolder(f);
-              },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'rename', child: Text('Yeniden adlandır')),
-                PopupMenuItem(value: 'delete', child: Text('Klasörü sil')),
-              ],
-            ),
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => WatchlistScreen(folderId: f.id),
-            )),
+            trailing: selecting
+                ? Checkbox(
+                    value: selFolders.contains(f.id),
+                    onChanged: (_) => _toggleFolder(f.id),
+                  )
+                : PopupMenuButton<String>(
+                    onSelected: (v) {
+                      if (v == 'rename') _renameFolder(f);
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                          value: 'rename', child: Text('Yeniden adlandır')),
+                    ],
+                  ),
+            onTap: () {
+              if (selecting) {
+                _toggleFolder(f.id);
+              } else {
+                Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => WatchlistScreen(folderId: f.id),
+                ));
+              }
+            },
+            onLongPress: selecting
+                ? null
+                : () => setState(() {
+                      selecting = true;
+                      selFolders.add(f.id);
+                    }),
           ),
         for (final w in its)
           ListTile(
+            selected: selItems.contains(w.item.key),
+            selectedTileColor: Colors.white12,
             leading: SizedBox(
               width: 32,
               child: Center(child: statusIcon(w.item, inWatchlist: true)),
@@ -741,17 +988,27 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                           : Colors.orange,
                     ),
                   ),
-            trailing: PopupMenuButton<String>(
-              onSelected: (v) {
-                if (v == 'move') _moveItem(w);
-                if (v == 'remove') st.removeItem(w.item.key);
-              },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'move', child: Text('Klasöre taşı')),
-                PopupMenuItem(value: 'remove', child: Text('Listeden çıkar')),
-              ],
-            ),
-            onTap: () => w.item.isDir ? _openDir(w.item) : _play(w.item),
+            trailing: selecting
+                ? Checkbox(
+                    value: selItems.contains(w.item.key),
+                    onChanged: (_) => _toggleItem(w.item.key),
+                  )
+                : null,
+            onTap: () {
+              if (selecting) {
+                _toggleItem(w.item.key);
+              } else if (w.item.isDir) {
+                _openDir(w.item);
+              } else {
+                _play(w.item);
+              }
+            },
+            onLongPress: selecting
+                ? null
+                : () => setState(() {
+                      selecting = true;
+                      selItems.add(w.item.key);
+                    }),
           ),
       ],
     );
@@ -1074,20 +1331,17 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _controlsVisible = true;
   bool _completedHandled = false;
   double? _dragMs;
-  double _volume = 100;
   TapDownDetails? _dtap;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (_isMobile) {
-      SystemChrome.setPreferredOrientations([
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    }
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     player = Player(
       configuration: PlayerConfiguration(bufferSize: 64 * 1024 * 1024),
     );
@@ -1161,10 +1415,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       s.cancel();
     }
     WidgetsBinding.instance.removeObserver(this);
-    if (_isMobile) {
-      SystemChrome.setPreferredOrientations([]);
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    }
+    SystemChrome.setPreferredOrientations([]);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     player.dispose();
     _focus.dispose();
     super.dispose();
@@ -1209,12 +1461,6 @@ class _PlayerScreenState extends State<PlayerScreen>
     _showControls();
   }
 
-  void _setVolume(double v) {
-    final nv = v.clamp(0.0, 100.0).toDouble();
-    setState(() => _volume = nv);
-    player.setVolume(nv);
-  }
-
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
     if (e is! KeyDownEvent && e is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
@@ -1237,18 +1483,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         k == LogicalKeyboardKey.mediaFastForward) {
       _seekBy(shift ? 60 : 10);
     } else if (k == LogicalKeyboardKey.arrowUp) {
-      // Masaustunde ses, TV/telefonda hiz (ses uzaktan kumandadan ayarlanir)
-      if (_isMobile) {
-        _changeSpeed(1);
-      } else {
-        _setVolume(_volume + 5);
-      }
+      _changeSpeed(1);
     } else if (k == LogicalKeyboardKey.arrowDown) {
-      if (_isMobile) {
-        _changeSpeed(-1);
-      } else {
-        _setVolume(_volume - 5);
-      }
+      _changeSpeed(-1);
     } else if (k == LogicalKeyboardKey.bracketRight) {
       _changeSpeed(1);
     } else if (k == LogicalKeyboardKey.bracketLeft) {
@@ -1296,7 +1533,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               Positioned.fill(
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
-                  onTap: _isMobile ? _toggleControls : () => player.playOrPause(),
+                  onTap: _toggleControls,
                   onDoubleTapDown: (d) => _dtap = d,
                   onDoubleTap: _onDoubleTap,
                   child: const SizedBox.expand(),
@@ -1493,24 +1730,6 @@ class _PlayerScreenState extends State<PlayerScreen>
           icon: const Icon(Icons.add_circle_outline),
           onPressed: () => _changeSpeed(1),
         ),
-        // ses (masaustu); Android'de donanim tuslari kullanilir
-        if (!_isMobile) ...[
-          const SizedBox(width: 12),
-          Icon(_volume == 0 ? Icons.volume_off : Icons.volume_up,
-              color: Colors.white),
-          SizedBox(
-            width: 120,
-            child: Slider(
-              value: _volume,
-              min: 0,
-              max: 100,
-              onChanged: (v) {
-                _setVolume(v);
-                _scheduleHide();
-              },
-            ),
-          ),
-        ],
       ],
     );
   }

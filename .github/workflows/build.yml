@@ -49,39 +49,11 @@ jobs:
           sed -i -E 's/minSdkVersion +flutter\.minSdkVersion/minSdkVersion 29/' "$GR"
           grep -n "minSdk" "$GR"
       - run: flutter pub get
-      - name: APK (arm64-v8a + armeabi-v7a)
-        run: flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64
+      - name: APK (sadece arm64-v8a)
+        run: flutter build apk --release --split-per-abi --target-platform android-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: webdav-player-android
           path: |
             build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
 
-  macos:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-      - name: macOS iskeletini uret
-        run: flutter create --platforms=macos --org com.example --project-name webdav_player .
-      - name: Ag izni (sandbox) ve hedef surum
-        run: |
-          for f in macos/Runner/DebugProfile.entitlements macos/Runner/Release.entitlements; do
-            /usr/libexec/PlistBuddy -c "Add :com.apple.security.network.client bool true" "$f" || true
-          done
-          sed -i '' 's/MACOSX_DEPLOYMENT_TARGET = [0-9.]*;/MACOSX_DEPLOYMENT_TARGET = 15.0;/' macos/Runner.xcodeproj/project.pbxproj
-          sed -i '' "s/platform :osx, '[0-9.]*'/platform :osx, '15.0'/" macos/Podfile || true
-      - run: flutter pub get
-      - run: flutter build macos --release
-      - name: Zip
-        run: |
-          cd build/macos/Build/Products/Release
-          ditto -c -k --sequesterRsrc --keepParent webdav_player.app "$GITHUB_WORKSPACE/webdav-player-macos.zip"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: webdav-player-macos-arm64
-          path: webdav-player-macos.zip
