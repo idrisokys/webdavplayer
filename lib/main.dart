@@ -26,12 +26,20 @@ const _watchedRatio = 0.95;
 const _speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
 const _holdSpeed = 2.5; // oynaticiya basili tutunca
 const _deviceRoot = '/storage/emulated/0';
+const _landscapeOnly = [
+  DeviceOrientation.landscapeLeft,
+  DeviceOrientation.landscapeRight,
+];
 const _allOrientations = [
   DeviceOrientation.portraitUp,
   DeviceOrientation.portraitDown,
   DeviceOrientation.landscapeLeft,
   DeviceOrientation.landscapeRight,
 ];
+
+// Derleme turu: --dart-define=TV=true  -> Android TV (armeabi-v7a, Android 12+)
+//                bayrak yok            -> Mobil (arm64-v8a, Android 10+)
+const bool kIsTv = bool.fromEnvironment('TV');
 
 // TV (kapatilacak cihaz) - ADB ag hata ayiklama
 const _tvHost = '192.168.1.44';
@@ -682,7 +690,8 @@ String? progressText(DavItem it) {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-  await SystemChrome.setPreferredOrientations(_allOrientations);
+  await SystemChrome.setPreferredOrientations(
+      kIsTv ? _landscapeOnly : _allOrientations);
   await ProgressStore.instance.init();
   await WatchlistStore.instance.init();
   runApp(const App());
@@ -702,17 +711,22 @@ class App extends StatelessWidget {
           seedColor: Colors.deepOrange,
           brightness: Brightness.dark,
         ),
+        // Uzaktan kumanda (D-pad) icin belirgin odak gostergesi
+        focusColor: kIsTv ? Colors.deepOrange.withOpacity(0.35) : null,
+        visualDensity: kIsTv ? VisualDensity.comfortable : null,
       ),
       builder: (context, child) {
         // Genis ekranlarda (Android TV / tablet) yaziyi biraz buyut
         final mq = MediaQuery.of(context);
         // Yatay ekranda kesinti (notch) kenarlarini bos birak
         Widget body = SafeArea(top: false, bottom: false, child: child!);
-        if (Platform.isAndroid &&
-            mq.size.width >= 900 &&
-            mq.size.shortestSide >= 500) {
+        if (kIsTv ||
+            (Platform.isAndroid &&
+                mq.size.width >= 900 &&
+                mq.size.shortestSide >= 500)) {
           body = MediaQuery(
-            data: mq.copyWith(textScaler: TextScaler.linear(1.15)),
+            data: mq.copyWith(
+                textScaler: TextScaler.linear(kIsTv ? 1.25 : 1.15)),
             child: body,
           );
         }
@@ -952,7 +966,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                     title: Text(
                         inRoot ? 'İzleme Listem' : (folder?.name ?? 'Klasör')),
                     actions: [
-                      if (inRoot)
+                      if (inRoot && !kIsTv)
                         IconButton(
                           icon: const Icon(Icons.power_settings_new),
                           tooltip: 'TV\'yi kapat',
@@ -1181,11 +1195,15 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   Future<void> _ensureStorage() async {
     if (!Platform.isAndroid) return;
-    if (await Permission.manageExternalStorage.isGranted) return;
-    final r = await Permission.manageExternalStorage.request();
-    if (r.isGranted) return;
-    if (await Permission.storage.isGranted) return;
-    await Permission.storage.request(); // Android 10 ve oncesi
+    try {
+      if (await Permission.manageExternalStorage.isGranted) return;
+      final r = await Permission.manageExternalStorage.request();
+      if (r.isGranted) return;
+      if (await Permission.storage.isGranted) return;
+      await Permission.storage.request(); // Android 10 ve oncesi
+    } catch (_) {
+      // Bazi TV'lerde "tum dosyalara erisim" ayar ekrani bulunmaz.
+    }
   }
 
   Future<void> _load() async {
@@ -1568,10 +1586,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     ]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     player = Player(
-      configuration: PlayerConfiguration(bufferSize: 64 * 1024 * 1024),
+      configuration: PlayerConfiguration(
+        // armeabi-v7a TV'lerde RAM az: tamponu kucuk tut
+        bufferSize: (kIsTv ? 32 : 64) * 1024 * 1024,
+      ),
     );
     controller = VideoController(player);
-    _initLevels();
+    if (!kIsTv) _initLevels();
     _init();
   }
 

@@ -1,7 +1,16 @@
 # WebDAV Player
 
 libmpv (media_kit) tabanli sade WebDAV video oynatici.
-**Yalnizca Android 10+ (API 29) ve arm64-v8a (ARMv8) cihazlar** (Android TV dahil).
+Iki ayri derleme uretilir:
+
+| Surum | Mimari | Android | APK |
+|-------|--------|---------|-----|
+| Mobil | arm64-v8a (ARMv8) | 10+ (API 29) | `webdav-player-mobile-arm64-v8a.apk` |
+| Android TV | armeabi-v7a (ARMv7) | 12+ (API 31) | `webdav-player-tv-armeabi-v7a.apk` |
+
+TV surumu `--dart-define=TV=true` ile derlenir: yalnizca yatay, LEANBACK launcher + banner,
+D-pad odak vurgusu, buyuk yazi, kucuk (32 MB) oynatma tamponu; "TV'yi kapat" ve
+parlaklik/ses hareketleri bu surumde yoktur.
 
 - Sunucu sabit: `http://192.168.1.44:8080/` (lib/main.dart icinde `_serverUrl`)
 - Acilis ekrani: Izleme Listem. Sag alttaki "Listeme ekle" ile sunucudan klasor/video ekle
@@ -28,7 +37,10 @@ libmpv (media_kit) tabanli sade WebDAV video oynatici.
 ## Derleme
 1. Zip'i ac, icindekileri repo kokune koy, main dalina push et.
 2. Actions > "Build" (gerekirse "Run workflow").
-3. Artifact: `webdav-player-android` (app-arm64-v8a-release.apk, minSdk 29).
+3. Artifact'lar: `webdav-player-mobile-arm64-v8a` (minSdk 29) ve `webdav-player-tv-armeabi-v7a` (minSdk 31).
+
+Yerelde: `flutter build apk --release --split-per-abi --target-platform android-arm64` (mobil),
+`... --target-platform android-arm --dart-define=TV=true` (TV; manifest/minSdk ayarlari CI'dadir).
 
 Notlar:
 - Android klasoru CI'da `flutter create` ile uretilir.
