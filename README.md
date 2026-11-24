@@ -14,6 +14,7 @@ libmpv (media_kit) tabanli sade WebDAV video oynatici.
   Izleme Listem ise harf sirasindadir
 - Oynatici: ekrana **basili tut = 2.5x**; sol yarida yukari/asagi kaydir = **parlaklik**,
   sag yarida = **ses**; alt cubukta durdur/oynat, gecen ve kalan sure, kaydirma cubugu
+- Uygulama ikonu: assets/icon.png (CI flutter_launcher_icons ile uretir)
 - Yatay / dikey ekran desteklenir (oynatici yataydir)
 - Kaldigin yerden devam; izlendi / yarim gostergesi
 - TV uzaktan kumanda: OK oynat/duraklat, sol/sag +-10 sn, yukari/asagi hiz

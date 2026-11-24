@@ -1150,7 +1150,8 @@ class _BrowserScreenState extends State<BrowserScreen> {
   late final List<Uri> stack;
   final Map<String, DavItem> selected = {};
   List<DavItem> items = [];
-  SortMode sort = SortMode.newest; // varsayilan: en yeni ustte
+  // ekleme ekranlarinda en yeni ustte; izleme listesinden acilan klasorlerde harf sirasi
+  late SortMode sort = widget.selectMode ? SortMode.newest : SortMode.nameAsc;
   bool loading = true;
   String? error;
 
