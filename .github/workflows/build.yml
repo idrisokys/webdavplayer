@@ -28,9 +28,11 @@ jobs:
           s = open(p, encoding="utf-8").read()
           extra = (
               '<uses-permission android:name="android.permission.INTERNET"/>\n'
+              '    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>\n'
+              '    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>\n'
               '    <uses-feature android:name="android.software.leanback" android:required="false"/>\n'
               '    <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>\n'
-              '    <application android:usesCleartextTraffic="true"'
+              '    <application android:usesCleartextTraffic="true" android:requestLegacyExternalStorage="true"'
           )
           s = s.replace("<application", extra, 1)
           s = re.sub(r'android:label="[^"]*"', 'android:label="WebDAV Player"', s, count=1)

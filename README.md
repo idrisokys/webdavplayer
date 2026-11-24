@@ -8,7 +8,14 @@ libmpv (media_kit) tabanli sade WebDAV video oynatici.
 - Sag ustteki ic ice gecmis daire simgesi = **secim modu** (bir ogeye uzun basmak da aciar):
   klasor/video sec, "Tumunu sec", **Tasi** veya **Kaldir** (sunucudaki dosyalar silinmez)
 - **TV'yi kapat** (power simgesi): `192.168.1.44:5555` adresine ADB ile `reboot -p` gonderir
-- Oynat/duraklat, +-10 sn sarma, hiz; kaldigin yerden devam; izlendi / yarim gostergesi
+- "Listeye ekle" ekraninin en ustunde **Cihazimdan ekle**: telefondaki klasor ve videolari da ekleyebilirsin
+  (ilk seferde "tum dosyalara erisim" izni istenir)
+- Klasor gezginlerinde varsayilan siralama **en yeni ustte** (sag ustteki siralama simgesinden degisir);
+  Izleme Listem ise harf sirasindadir
+- Oynatici: ekrana **basili tut = 2.5x**; sol yarida yukari/asagi kaydir = **parlaklik**,
+  sag yarida = **ses**; alt cubukta durdur/oynat, gecen ve kalan sure, kaydirma cubugu
+- Yatay / dikey ekran desteklenir (oynatici yataydir)
+- Kaldigin yerden devam; izlendi / yarim gostergesi
 - TV uzaktan kumanda: OK oynat/duraklat, sol/sag +-10 sn, yukari/asagi hiz
 
 ## TV kapatma icin gerekenler

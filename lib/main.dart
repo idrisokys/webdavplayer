@@ -7,7 +7,10 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:screen_brightness/screen_brightness.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:volume_controller/volume_controller.dart';
 import 'package:xml/xml.dart';
 
 import 'adb.dart';
@@ -21,6 +24,14 @@ const _videoExt = {
 };
 const _watchedRatio = 0.95;
 const _speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
+const _holdSpeed = 2.5; // oynaticiya basili tutunca
+const _deviceRoot = '/storage/emulated/0';
+const _allOrientations = [
+  DeviceOrientation.portraitUp,
+  DeviceOrientation.portraitDown,
+  DeviceOrientation.landscapeLeft,
+  DeviceOrientation.landscapeRight,
+];
 
 // TV (kapatilacak cihaz) - ADB ag hata ayiklama
 const _tvHost = '192.168.1.44';
@@ -45,14 +56,32 @@ String _decode(String s) {
   }
 }
 
+const _trAlpha = 'abcçdefgğhıijklmnoöpqrsştuüvwxyz';
+
+int _chKey(int c) {
+  final i = _trAlpha.codeUnits.indexOf(c);
+  return i >= 0 ? 0x1000 + i : c;
+}
+
+int _cmpText(String a, String b) {
+  final n = a.length < b.length ? a.length : b.length;
+  for (var i = 0; i < n; i++) {
+    final c = _chKey(a.codeUnitAt(i)).compareTo(_chKey(b.codeUnitAt(i)));
+    if (c != 0) return c;
+  }
+  return a.length.compareTo(b.length);
+}
+
+/// Dogal (sayilari sayi olarak) ve Turkce harf sirali, buyuk/kucuk harf duyarsiz.
 int naturalCompare(String a, String b) {
   final re = RegExp(r'(\d+)|(\D+)');
-  final pa = re.allMatches(a.toLowerCase()).map((m) => m.group(0)!).toList();
-  final pb = re.allMatches(b.toLowerCase()).map((m) => m.group(0)!).toList();
+  String norm(String x) => x.replaceAll('İ', 'i').toLowerCase();
+  final pa = re.allMatches(norm(a)).map((m) => m.group(0)!).toList();
+  final pb = re.allMatches(norm(b)).map((m) => m.group(0)!).toList();
   for (var i = 0; i < pa.length && i < pb.length; i++) {
     final x = pa[i], y = pb[i];
     final nx = int.tryParse(x), ny = int.tryParse(y);
-    final c = (nx != null && ny != null) ? nx.compareTo(ny) : x.compareTo(y);
+    final c = (nx != null && ny != null) ? nx.compareTo(ny) : _cmpText(x, y);
     if (c != 0) return c;
   }
   return pa.length.compareTo(pb.length);
@@ -130,7 +159,10 @@ class DavItem {
   final Uri uri;
   final String key; // cozulmus yol - ilerleme anahtari
   final bool isDir;
-  DavItem(this.name, this.uri, this.key, this.isDir);
+  final DateTime? modified; // siralama icin (kalici degil)
+  DavItem(this.name, this.uri, this.key, this.isDir, {this.modified});
+
+  bool get isLocal => uri.scheme == 'file';
 
   Map<String, dynamic> toJson() => {
         'name': name,
@@ -156,7 +188,7 @@ class DavError implements Exception {
 
 const _propBody = '<?xml version="1.0" encoding="utf-8"?>'
     '<d:propfind xmlns:d="DAV:"><d:prop>'
-    '<d:resourcetype/><d:getcontentlength/>'
+    '<d:resourcetype/><d:getcontentlength/><d:getlastmodified/>'
     '</d:prop></d:propfind>';
 
 Future<List<DavItem>> propfind(Config cfg, Uri dir) async {
@@ -204,13 +236,18 @@ Future<List<DavItem>> propfind(Config cfg, Uri dir) async {
       } else if (!uri.path.endsWith('/')) {
         uri = uri.replace(path: '${uri.path}/');
       }
-      items.add(DavItem(name, uri, path, isDir));
+      DateTime? modified;
+      final lm = r.findAllElements('getlastmodified', namespace: '*');
+      if (lm.isNotEmpty) {
+        final t = lm.first.innerText.trim();
+        try {
+          modified = HttpDate.parse(t);
+        } catch (_) {
+          modified = DateTime.tryParse(t);
+        }
+      }
+      items.add(DavItem(name, uri, path, isDir, modified: modified));
     }
-
-    items.sort((a, b) {
-      if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
-      return naturalCompare(a.name, b.name);
-    });
     return items;
   } on TimeoutException {
     throw DavError('Sunucu zaman asimina ugradi.');
@@ -224,6 +261,69 @@ Future<List<DavItem>> propfind(Config cfg, Uri dir) async {
   } finally {
     client.close();
   }
+}
+
+/// Telefon icindeki klasor / video listesi (dart:io).
+Future<List<DavItem>> listLocal(Uri dir) async {
+  final items = <DavItem>[];
+  try {
+    for (final e in Directory.fromUri(dir).listSync(followLinks: false)) {
+      final name = e.path.substring(e.path.lastIndexOf('/') + 1);
+      if (name.isEmpty || name.startsWith('.')) continue;
+      final isDir = FileSystemEntity.isDirectorySync(e.path);
+      if (!isDir) {
+        final dot = name.lastIndexOf('.');
+        final ext = dot >= 0 ? name.substring(dot).toLowerCase() : '';
+        if (!_videoExt.contains(ext)) continue;
+      }
+      DateTime? modified;
+      try {
+        modified = e.statSync().modified;
+      } catch (_) {}
+      items.add(DavItem(
+        name,
+        isDir ? Directory(e.path).uri : File(e.path).uri,
+        'local:${e.path}',
+        isDir,
+        modified: modified,
+      ));
+    }
+  } on FileSystemException {
+    throw DavError(
+        'Klasör okunamadı. Depolama erişim izni verildi mi?');
+  }
+  return items;
+}
+
+enum SortMode { newest, oldest, nameAsc, nameDesc }
+
+String sortLabel(SortMode m) => switch (m) {
+      SortMode.newest => 'En yeni üstte',
+      SortMode.oldest => 'En eski üstte',
+      SortMode.nameAsc => 'Ad (A → Z)',
+      SortMode.nameDesc => 'Ad (Z → A)',
+    };
+
+/// Klasorler her zaman dosyalardan once gelir.
+List<DavItem> sortItems(List<DavItem> list, SortMode mode) {
+  final epoch = DateTime.fromMillisecondsSinceEpoch(0);
+  final out = [...list];
+  out.sort((a, b) {
+    if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+    switch (mode) {
+      case SortMode.newest:
+        final c = (b.modified ?? epoch).compareTo(a.modified ?? epoch);
+        return c != 0 ? c : naturalCompare(a.name, b.name);
+      case SortMode.oldest:
+        final c = (a.modified ?? epoch).compareTo(b.modified ?? epoch);
+        return c != 0 ? c : naturalCompare(a.name, b.name);
+      case SortMode.nameAsc:
+        return naturalCompare(a.name, b.name);
+      case SortMode.nameDesc:
+        return naturalCompare(b.name, a.name);
+    }
+  });
+  return out;
 }
 
 // ============================================================================
@@ -293,8 +393,14 @@ class WatchlistStore extends ChangeNotifier {
 
   bool contains(String key) => items.any((e) => e.item.key == key);
 
-  List<WlItem> itemsIn(String? folder) =>
-      items.where((e) => e.folder == folder).toList();
+  /// Izleme listesi: harf sirasi (Turkce, dogal siralama).
+  List<WlItem> itemsIn(String? folder) => items
+      .where((e) => e.folder == folder)
+      .toList()
+    ..sort((a, b) => naturalCompare(a.item.name, b.item.name));
+
+  List<WlFolder> get sortedFolders =>
+      [...folders]..sort((a, b) => naturalCompare(a.name, b.name));
 
   int countIn(String id) => items.where((e) => e.folder == id).length;
 
@@ -491,6 +597,9 @@ Future<FolderChoice?> showFolderPicker(
     context: context,
     builder: (ctx) {
       final st = WatchlistStore.instance;
+      // id = olusturma zamani -> en yeni klasor en ustte
+      final fs = [...st.folders]..sort((a, b) =>
+          (int.tryParse(b.id) ?? 0).compareTo(int.tryParse(a.id) ?? 0));
       return SimpleDialog(
         title: Text(title),
         children: [
@@ -500,7 +609,7 @@ Future<FolderChoice?> showFolderPicker(
               child: _optRow(Icons.home_outlined, 'Ana liste',
                   current: current == null),
             ),
-          for (final f in st.folders)
+          for (final f in fs)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(ctx, FolderChoice(f.id)),
               child: _optRow(Icons.folder_special, f.name,
@@ -573,6 +682,7 @@ String? progressText(DavItem it) {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+  await SystemChrome.setPreferredOrientations(_allOrientations);
   await ProgressStore.instance.init();
   await WatchlistStore.instance.init();
   runApp(const App());
@@ -596,13 +706,17 @@ class App extends StatelessWidget {
       builder: (context, child) {
         // Genis ekranlarda (Android TV / tablet) yaziyi biraz buyut
         final mq = MediaQuery.of(context);
-        if (Platform.isAndroid && mq.size.width >= 900) {
-          return MediaQuery(
+        // Yatay ekranda kesinti (notch) kenarlarini bos birak
+        Widget body = SafeArea(top: false, bottom: false, child: child!);
+        if (Platform.isAndroid &&
+            mq.size.width >= 900 &&
+            mq.size.shortestSide >= 500) {
+          body = MediaQuery(
             data: mq.copyWith(textScaler: TextScaler.linear(1.15)),
-            child: child!,
+            child: body,
           );
         }
-        return child!;
+        return body;
       },
       home: const WatchlistScreen(),
     );
@@ -804,7 +918,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
       builder: (context, _) {
         final inRoot = widget.folderId == null;
         final folder = st.folderById(widget.folderId);
-        final folders = inRoot ? st.folders : <WlFolder>[];
+        final folders = inRoot ? st.sortedFolders : <WlFolder>[];
         final its = st.itemsIn(widget.folderId);
         final empty = folders.isEmpty && its.isEmpty;
 
@@ -1036,6 +1150,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   late final List<Uri> stack;
   final Map<String, DavItem> selected = {};
   List<DavItem> items = [];
+  SortMode sort = SortMode.newest; // varsayilan: en yeni ustte
   bool loading = true;
   String? error;
 
@@ -1048,14 +1163,29 @@ class _BrowserScreenState extends State<BrowserScreen> {
     _load();
   }
 
+  bool get _atServerRoot => widget.selectMode && stack.length == 1;
+  bool get _isLocal => stack.last.scheme == 'file';
+
   String get _title {
-    if (widget.selectMode && stack.length == 1) return 'Listeye ekle';
+    if (_atServerRoot) return 'Listeye ekle';
     final segs = stack.last.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (_isLocal && stack.last.path.replaceAll(RegExp(r'/+$'), '') == _deviceRoot) {
+      return 'Cihaz belleği';
+    }
     return segs.isEmpty ? 'Sunucu' : _decode(segs.last);
   }
 
   bool get _allSelected =>
       items.isNotEmpty && items.every((i) => selected.containsKey(i.key));
+
+  Future<void> _ensureStorage() async {
+    if (!Platform.isAndroid) return;
+    if (await Permission.manageExternalStorage.isGranted) return;
+    final r = await Permission.manageExternalStorage.request();
+    if (r.isGranted) return;
+    if (await Permission.storage.isGranted) return;
+    await Permission.storage.request(); // Android 10 ve oncesi
+  }
 
   Future<void> _load() async {
     setState(() {
@@ -1063,10 +1193,16 @@ class _BrowserScreenState extends State<BrowserScreen> {
       error = null;
     });
     try {
-      final r = await propfind(kConfig, stack.last);
+      final List<DavItem> r;
+      if (_isLocal) {
+        await _ensureStorage();
+        r = await listLocal(stack.last);
+      } else {
+        r = await propfind(kConfig, stack.last);
+      }
       if (!mounted) return;
       setState(() {
-        items = r;
+        items = sortItems(r, sort);
         loading = false;
       });
     } catch (e) {
@@ -1140,6 +1276,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
     await _load();
   }
 
+  Future<void> _openDevice() async {
+    stack.add(Directory(_deviceRoot).uri);
+    await _load();
+  }
+
   Future<void> _play(DavItem it) async {
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => PlayerScreen(cfg: kConfig, item: it),
@@ -1174,6 +1315,23 @@ class _BrowserScreenState extends State<BrowserScreen> {
                 icon: Icon(_allSelected ? Icons.deselect : Icons.select_all),
                 label: Text(_allSelected ? 'Seçimi kaldır' : 'Tümünü seç'),
               ),
+            PopupMenuButton<SortMode>(
+              icon: const Icon(Icons.sort),
+              tooltip: 'Sırala',
+              initialValue: sort,
+              onSelected: (m) => setState(() {
+                sort = m;
+                items = sortItems(items, m);
+              }),
+              itemBuilder: (_) => [
+                for (final m in SortMode.values)
+                  CheckedPopupMenuItem(
+                    value: m,
+                    checked: m == sort,
+                    child: Text(sortLabel(m)),
+                  ),
+              ],
+            ),
             IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'Yenile',
@@ -1237,71 +1395,123 @@ class _BrowserScreenState extends State<BrowserScreen> {
     );
   }
 
-  Widget _body() {
-    if (loading) return const Center(child: CircularProgressIndicator());
-    if (error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+  Widget _deviceRow() {
+    return ListTile(
+      leading: const SizedBox(
+        width: 32,
+        child: Center(
+          child: Icon(Icons.phone_android,
+              color: Colors.lightGreenAccent, size: 28),
+        ),
+      ),
+      title: const Text('Cihazımdan ekle'),
+      subtitle: const Text('Telefondaki klasör ve videolar'),
+      trailing: const Icon(Icons.chevron_right),
+      onTap: _openDevice,
+    );
+  }
+
+  Widget _errorView() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        children: [
+          const Icon(Icons.error_outline, size: 48, color: Colors.redAccent),
+          const SizedBox(height: 12),
+          Text(error!, textAlign: TextAlign.center),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            alignment: WrapAlignment.center,
             children: [
-              const Icon(Icons.error_outline, size: 48, color: Colors.redAccent),
-              const SizedBox(height: 12),
-              Text(error!, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: _load,
                 icon: const Icon(Icons.refresh),
                 label: const Text('Tekrar dene'),
               ),
+              if (_isLocal)
+                OutlinedButton.icon(
+                  onPressed: openAppSettings,
+                  icon: const Icon(Icons.settings),
+                  label: const Text('İzin ayarları'),
+                ),
             ],
           ),
-        ),
-      );
-    }
-    if (items.isEmpty) {
-      return const Center(child: Text('Video bulunamadı'));
-    }
+        ],
+      ),
+    );
+  }
+
+  Widget _tile(DavItem it) {
     final wl = WatchlistStore.instance;
+    final inList = widget.selectMode && wl.contains(it.key);
+    final prog = progressText(it);
+    final sub = [
+      if (inList) 'Listede',
+      if (prog != null) prog,
+    ].join('  •  ');
+    final sel = selected.containsKey(it.key);
+    return ListTile(
+      selected: sel,
+      selectedTileColor: Colors.white12,
+      leading: SizedBox(width: 32, child: Center(child: statusIcon(it))),
+      title: Text(it.name, maxLines: 2, overflow: TextOverflow.ellipsis),
+      subtitle: sub.isEmpty
+          ? null
+          : Text(sub,
+              style: TextStyle(
+                  color: prog != null && prog != 'İzlendi'
+                      ? Colors.orange
+                      : null)),
+      trailing: widget.selectMode
+          ? Checkbox(value: sel, onChanged: (_) => _toggle(it))
+          : null,
+      onTap: () {
+        if (it.isDir) {
+          _enter(it);
+        } else if (widget.selectMode) {
+          _toggle(it);
+        } else {
+          _play(it);
+        }
+      },
+    );
+  }
+
+  Widget _body() {
+    // Sunucu kokunde "Cihazimdan ekle" satiri her durumda en ustte gorunur
+    final pre = <Widget>[
+      if (_atServerRoot) _deviceRow(),
+      if (_atServerRoot) const Divider(height: 1),
+    ];
+    final List<Widget>? tail = loading
+        ? const [
+            Padding(
+              padding: EdgeInsets.all(48),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+          ]
+        : error != null
+            ? [_errorView()]
+            : items.isEmpty
+                ? const [
+                    Padding(
+                      padding: EdgeInsets.all(48),
+                      child: Center(child: Text('Video bulunamadı')),
+                    ),
+                  ]
+                : null;
+    final count = pre.length + (tail?.length ?? items.length);
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView.builder(
-        itemCount: items.length,
+        physics: const AlwaysScrollableScrollPhysics(),
+        itemCount: count,
         itemBuilder: (_, i) {
-          final it = items[i];
-          final inList = widget.selectMode && wl.contains(it.key);
-          final prog = progressText(it);
-          final sub = [
-            if (inList) 'Listede',
-            if (prog != null) prog,
-          ].join('  •  ');
-          final sel = selected.containsKey(it.key);
-          return ListTile(
-            selected: sel,
-            selectedTileColor: Colors.white12,
-            leading: SizedBox(width: 32, child: Center(child: statusIcon(it))),
-            title: Text(it.name, maxLines: 2, overflow: TextOverflow.ellipsis),
-            subtitle: sub.isEmpty
-                ? null
-                : Text(sub,
-                    style: TextStyle(
-                        color: prog != null && prog != 'İzlendi'
-                            ? Colors.orange
-                            : null)),
-            trailing: widget.selectMode
-                ? Checkbox(value: sel, onChanged: (_) => _toggle(it))
-                : null,
-            onTap: () {
-              if (it.isDir) {
-                _enter(it);
-              } else if (widget.selectMode) {
-                _toggle(it);
-              } else {
-                _play(it);
-              }
-            },
-          );
+          if (i < pre.length) return pre[i];
+          final j = i - pre.length;
+          return tail != null ? tail[j] : _tile(items[j]);
         },
       ),
     );
@@ -1333,6 +1543,20 @@ class _PlayerScreenState extends State<PlayerScreen>
   double? _dragMs;
   TapDownDetails? _dtap;
 
+  // basili tutunca hizli oynat
+  bool _boost = false;
+  double _rateBefore = 1.0;
+
+  // parlaklik (sol) / ses (sag) kaydirma
+  double _brightness = 0.5;
+  double _volume = 0.5;
+  int _vSide = 0; // 0 = parlaklik, 1 = ses
+  double _vBase = 0;
+  double _vDy = 0;
+  int? _hudSide;
+  double _hudValue = 0;
+  Timer? _hudTimer;
+
   @override
   void initState() {
     super.initState();
@@ -1346,7 +1570,18 @@ class _PlayerScreenState extends State<PlayerScreen>
       configuration: PlayerConfiguration(bufferSize: 64 * 1024 * 1024),
     );
     controller = VideoController(player);
+    _initLevels();
     _init();
+  }
+
+  Future<void> _initLevels() async {
+    try {
+      _brightness = await ScreenBrightness.instance.application;
+    } catch (_) {}
+    try {
+      VolumeController.instance.showSystemUI = false;
+      _volume = await VolumeController.instance.getVolume();
+    } catch (_) {}
   }
 
   Future<void> _init() async {
@@ -1371,7 +1606,9 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     await player.open(
       Media(
-        widget.item.uri.toString(),
+        widget.item.isLocal
+            ? widget.item.uri.toFilePath()
+            : widget.item.uri.toString(),
         httpHeaders: widget.cfg.authHeaders,
         start: start,
       ),
@@ -1411,11 +1648,16 @@ class _PlayerScreenState extends State<PlayerScreen>
     _save();
     _hideTimer?.cancel();
     _saveTimer?.cancel();
+    _hudTimer?.cancel();
+    ScreenBrightness.instance.resetApplicationScreenBrightness().catchError((_) {});
+    try {
+      VolumeController.instance.showSystemUI = true;
+    } catch (_) {}
     for (final s in _subs) {
       s.cancel();
     }
     WidgetsBinding.instance.removeObserver(this);
-    SystemChrome.setPreferredOrientations([]);
+    SystemChrome.setPreferredOrientations(_allOrientations);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     player.dispose();
     _focus.dispose();
@@ -1507,6 +1749,127 @@ class _PlayerScreenState extends State<PlayerScreen>
     _seekBy(d.localPosition.dx < w / 2 ? -10 : 10);
   }
 
+  // ---- basili tut: 2.5x
+  void _startBoost() {
+    if (_boost) return;
+    _boost = true;
+    _rateBefore = player.state.rate;
+    player.setRate(_holdSpeed);
+    setState(() {});
+  }
+
+  void _endBoost() {
+    if (!_boost) return;
+    _boost = false;
+    player.setRate(_rateBefore);
+    if (mounted) setState(() {});
+  }
+
+  // ---- dikey kaydirma: sol = parlaklik, sag = ses
+  void _vStart(DragStartDetails d) {
+    final w = MediaQuery.of(context).size.width;
+    _vSide = d.localPosition.dx < w / 2 ? 0 : 1;
+    _vBase = _vSide == 0 ? _brightness : _volume;
+    _vDy = 0;
+  }
+
+  void _vUpdate(DragUpdateDetails d) {
+    _vDy += d.delta.dy;
+    final h = MediaQuery.of(context).size.height;
+    final v = (_vBase - _vDy / (h * 0.7))
+        .clamp(_vSide == 0 ? 0.02 : 0.0, 1.0)
+        .toDouble();
+    if (_vSide == 0) {
+      _brightness = v;
+      ScreenBrightness.instance
+          .setApplicationScreenBrightness(v)
+          .catchError((_) {});
+    } else {
+      _volume = v;
+      VolumeController.instance.setVolume(v).catchError((_) {});
+    }
+    setState(() {
+      _hudSide = _vSide;
+      _hudValue = v;
+    });
+    _hudTimer?.cancel();
+    _hudTimer = Timer(const Duration(milliseconds: 900), () {
+      if (mounted) setState(() => _hudSide = null);
+    });
+  }
+
+  Widget _levelHud() {
+    final side = _hudSide;
+    if (side == null) return const SizedBox.shrink();
+    final icon = side == 0
+        ? Icons.brightness_6
+        : (_hudValue <= 0.001 ? Icons.volume_off : Icons.volume_up);
+    return Align(
+      alignment: side == 0 ? Alignment.centerLeft : Alignment.centerRight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Container(
+          width: 56,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.black54,
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Colors.white),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 90,
+                width: 6,
+                child: RotatedBox(
+                  quarterTurns: 3,
+                  child: LinearProgressIndicator(
+                    value: _hudValue,
+                    color: Colors.orange,
+                    backgroundColor: Colors.white24,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text('${(_hudValue * 100).round()}',
+                  style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _boostHud() {
+    if (!_boost) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.topCenter,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.only(top: 16),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.fast_forward, color: Colors.white, size: 20),
+                SizedBox(width: 6),
+                Text('2.5x',
+                    style: TextStyle(color: Colors.white, fontSize: 15)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   // ---- arayuz
   @override
   Widget build(BuildContext context) {
@@ -1536,9 +1899,16 @@ class _PlayerScreenState extends State<PlayerScreen>
                   onTap: _toggleControls,
                   onDoubleTapDown: (d) => _dtap = d,
                   onDoubleTap: _onDoubleTap,
+                  onLongPressStart: (_) => _startBoost(),
+                  onLongPressEnd: (_) => _endBoost(),
+                  onLongPressCancel: _endBoost,
+                  onVerticalDragStart: _vStart,
+                  onVerticalDragUpdate: _vUpdate,
                   child: const SizedBox.expand(),
                 ),
               ),
+              Positioned.fill(child: IgnorePointer(child: _levelHud())),
+              Positioned.fill(child: IgnorePointer(child: _boostHud())),
               Positioned.fill(
                 child: IgnorePointer(
                   child: Center(
@@ -1616,7 +1986,7 @@ class _PlayerScreenState extends State<PlayerScreen>
             top: false,
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              children: [_seekRow(), _buttonRow()],
+              children: [_seekRow()],
             ),
           ),
         ),
@@ -1640,10 +2010,31 @@ class _PlayerScreenState extends State<PlayerScreen>
             final value = (_dragMs ?? pos.inMilliseconds.toDouble())
                 .clamp(0.0, hasDur ? maxMs : 1.0)
                 .toDouble();
+            final remaining = hasDur
+                ? Duration(milliseconds: (maxMs - value).round())
+                : Duration.zero;
             return Row(
               children: [
+                StreamBuilder<bool>(
+                  stream: player.stream.playing,
+                  initialData: player.state.playing,
+                  builder: (_, s) => IconButton(
+                    iconSize: 26,
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints.tightFor(width: 36, height: 36),
+                    color: Colors.white,
+                    icon: Icon((s.data ?? false) ? Icons.pause : Icons.play_arrow),
+                    onPressed: () {
+                      player.playOrPause();
+                      _showControls();
+                    },
+                  ),
+                ),
+                const SizedBox(width: 4),
                 SizedBox(
-                  width: 56,
+                  width: 60,
                   child: Text(fmtDur(Duration(milliseconds: value.round())),
                       style: const TextStyle(color: Colors.white)),
                 ),
@@ -1663,8 +2054,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                   ),
                 ),
                 SizedBox(
-                  width: 56,
-                  child: Text(fmtDur(dur),
+                  width: 66,
+                  child: Text(hasDur ? '-${fmtDur(remaining)}' : '--:--',
                       textAlign: TextAlign.right,
                       style: const TextStyle(color: Colors.white)),
                 ),
@@ -1673,64 +2064,6 @@ class _PlayerScreenState extends State<PlayerScreen>
           },
         );
       },
-    );
-  }
-
-  Widget _buttonRow() {
-    return Row(
-      children: [
-        IconButton(
-          iconSize: 30,
-          color: Colors.white,
-          icon: const Icon(Icons.replay_10),
-          onPressed: () => _seekBy(-10),
-        ),
-        StreamBuilder<bool>(
-          stream: player.stream.playing,
-          initialData: player.state.playing,
-          builder: (_, s) => IconButton(
-            iconSize: 42,
-            color: Colors.white,
-            icon: Icon((s.data ?? false)
-                ? Icons.pause_circle_filled
-                : Icons.play_circle_fill),
-            onPressed: () {
-              player.playOrPause();
-              _showControls();
-            },
-          ),
-        ),
-        IconButton(
-          iconSize: 30,
-          color: Colors.white,
-          icon: const Icon(Icons.forward_10),
-          onPressed: () => _seekBy(10),
-        ),
-        const Spacer(),
-        // hiz
-        IconButton(
-          color: Colors.white,
-          icon: const Icon(Icons.remove_circle_outline),
-          onPressed: () => _changeSpeed(-1),
-        ),
-        StreamBuilder<double>(
-          stream: player.stream.rate,
-          initialData: player.state.rate,
-          builder: (_, s) => TextButton(
-            onPressed: () {
-              player.setRate(1.0);
-              _showControls();
-            },
-            child: Text('${(s.data ?? 1.0).toStringAsFixed(2)}x',
-                style: const TextStyle(color: Colors.white, fontSize: 16)),
-          ),
-        ),
-        IconButton(
-          color: Colors.white,
-          icon: const Icon(Icons.add_circle_outline),
-          onPressed: () => _changeSpeed(1),
-        ),
-      ],
     );
   }
 }
