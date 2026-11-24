@@ -27,6 +27,7 @@ parlaklik/ses hareketleri bu surumde yoktur.
 - Yatay / dikey ekran desteklenir (oynatici yataydir)
 - Kaldigin yerden devam; izlendi / yarim gostergesi
 - TV uzaktan kumanda: OK oynat/duraklat, sol/sag +-10 sn, yukari/asagi hiz
+- TV listelerde: bir satirdayken **SAG tusu = sec / secimi kaldir** (secim modunu da kendisi acar); Izleme Listem'de klasor satirinda **SOL tusu = yeniden adlandir**; Geri tusu secim modundan cikar
 
 ## TV kapatma icin gerekenler
 1. TV'de Gelistirici secenekleri > **ADB hata ayiklama / Ag hata ayiklama** acik olmali (TCP 5555).

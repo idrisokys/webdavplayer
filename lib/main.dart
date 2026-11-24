@@ -697,6 +697,40 @@ Future<void> main() async {
   runApp(const App());
 }
 
+/// Android TV kumandasi: satirdayken SAG tusu = secim (isaretle / kaldir).
+/// SOL tusu istege bagli (ornegin klasorde yeniden adlandir).
+/// Yalnizca TV surumunde (kIsTv) etkindir; mobilde cocugu aynen dondurur.
+class _DpadSelect extends StatelessWidget {
+  final VoidCallback? onRight;
+  final VoidCallback? onLeft;
+  final Widget child;
+  const _DpadSelect({this.onRight, this.onLeft, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!kIsTv || (onRight == null && onLeft == null)) return child;
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (node, e) {
+        final k = e.logicalKey;
+        final cb = k == LogicalKeyboardKey.arrowRight
+            ? onRight
+            : k == LogicalKeyboardKey.arrowLeft
+                ? onLeft
+                : null;
+        if (cb == null) return KeyEventResult.ignored;
+        if (e is KeyDownEvent) cb(); // basili tutunca tekrar etmesin
+        return KeyEventResult.handled;
+      },
+      child: child,
+    );
+  }
+}
+
+/// TV'de satir ici Checkbox/menu odak almasin (yukari-asagi satir satir gitsin)
+Widget _tvNoFocus(Widget w) => ExcludeFocus(excluding: kIsTv, child: w);
+
 class App extends StatelessWidget {
   const App({super.key});
 
@@ -769,6 +803,20 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
 
   void _toggleItem(String key) => setState(() {
         if (!selItems.remove(key)) selItems.add(key);
+      });
+
+  // Kumanda SAG tusu: secim modunu ac + satiri isaretle/kaldir.
+  // Hicbir sey secili kalmazsa secim modundan otomatik cik.
+  void _dpadFolder(String id) => setState(() {
+        selecting = true;
+        if (!selFolders.remove(id)) selFolders.add(id);
+        if (_selCount == 0) selecting = false;
+      });
+
+  void _dpadItem(String key) => setState(() {
+        selecting = true;
+        if (!selItems.remove(key)) selItems.add(key);
+        if (_selCount == 0) selecting = false;
       });
 
   bool _allSelected(List<WlFolder> folders, List<WlItem> its) =>
@@ -1057,7 +1105,10 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
       padding: const EdgeInsets.only(bottom: 96),
       children: [
         for (final f in folders)
-          ListTile(
+          _DpadSelect(
+            onRight: () => _dpadFolder(f.id),
+            onLeft: selecting ? null : () => _renameFolder(f),
+            child: ListTile(
             selected: selFolders.contains(f.id),
             selectedTileColor: Colors.white12,
             leading: const SizedBox(
@@ -1067,7 +1118,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
             ),
             title: Text(f.name, maxLines: 2, overflow: TextOverflow.ellipsis),
             subtitle: Text('${st.countIn(f.id)} öğe'),
-            trailing: selecting
+            trailing: _tvNoFocus(selecting
                 ? Checkbox(
                     value: selFolders.contains(f.id),
                     onChanged: (_) => _toggleFolder(f.id),
@@ -1080,7 +1131,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                       PopupMenuItem(
                           value: 'rename', child: Text('Yeniden adlandır')),
                     ],
-                  ),
+                  )),
             onTap: () {
               if (selecting) {
                 _toggleFolder(f.id);
@@ -1096,9 +1147,12 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                       selecting = true;
                       selFolders.add(f.id);
                     }),
+            ),
           ),
         for (final w in its)
-          ListTile(
+          _DpadSelect(
+            onRight: () => _dpadItem(w.item.key),
+            child: ListTile(
             selected: selItems.contains(w.item.key),
             selectedTileColor: Colors.white12,
             leading: SizedBox(
@@ -1117,10 +1171,10 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                     ),
                   ),
             trailing: selecting
-                ? Checkbox(
+                ? _tvNoFocus(Checkbox(
                     value: selItems.contains(w.item.key),
                     onChanged: (_) => _toggleItem(w.item.key),
-                  )
+                  ))
                 : null,
             onTap: () {
               if (selecting) {
@@ -1137,6 +1191,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                       selecting = true;
                       selItems.add(w.item.key);
                     }),
+            ),
           ),
       ],
     );
@@ -1471,7 +1526,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
       if (prog != null) prog,
     ].join('  •  ');
     final sel = selected.containsKey(it.key);
-    return ListTile(
+    return _DpadSelect(
+      onRight: widget.selectMode ? () => _toggle(it) : null,
+      child: ListTile(
       selected: sel,
       selectedTileColor: Colors.white12,
       leading: SizedBox(width: 32, child: Center(child: statusIcon(it))),
@@ -1484,7 +1541,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                       ? Colors.orange
                       : null)),
       trailing: widget.selectMode
-          ? Checkbox(value: sel, onChanged: (_) => _toggle(it))
+          ? _tvNoFocus(Checkbox(value: sel, onChanged: (_) => _toggle(it)))
           : null,
       onTap: () {
         if (it.isDir) {
@@ -1495,6 +1552,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
           _play(it);
         }
       },
+      ),
     );
   }
 
