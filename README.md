@@ -21,6 +21,8 @@ parlaklik/ses hareketleri bu surumde yoktur.
   (ilk seferde "tum dosyalara erisim" izni istenir).
   Cihaza takili **USB HDD / SD kart** da otomatik bulunur: hemen altinda **Harici diskten ekle** satiri cikar
   (`/storage/<UUID>`; ekrani asagi cekince yeniden taranir)
+- Izleme Listem'in en sagindaki **cip simgesi** = yurutme bicimi: Donanim (mediacodec) / **Donanim + (mediacodec-copy, varsayilan)** / Yazilim
+  (secim kalici; sonraki acilan videoda gecerli olur)
 - Klasor gezginlerinde varsayilan siralama **en yeni ustte** (sag ustteki siralama simgesinden degisir);
   Izleme Listem ise harf sirasindadir
 - Oynatici: ekrana **basili tut = 2.5x**; sol yarida yukari/asagi kaydir = **parlaklik**,

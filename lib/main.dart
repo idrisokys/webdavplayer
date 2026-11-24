@@ -120,6 +120,42 @@ class Entry {
   const Entry(this.pos, this.dur, this.watched);
 }
 
+/// Video cozme (decode) yontemi.
+enum DecodeMode {
+  hw('Donanım', 'mediacodec'),
+  hwPlus('Donanım +', 'mediacodec-copy'),
+  sw('Yazılım', 'no');
+
+  final String label;
+  final String hwdec; // mpv hwdec degeri
+  const DecodeMode(this.label, this.hwdec);
+}
+
+class DecodeSettings {
+  DecodeSettings._();
+  static final DecodeSettings instance = DecodeSettings._();
+  static const _key = 'decode_mode';
+
+  final ValueNotifier<DecodeMode> mode = ValueNotifier(DecodeMode.hwPlus);
+
+  Future<void> init() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final n = p.getString(_key);
+      mode.value = DecodeMode.values
+          .firstWhere((m) => m.name == n, orElse: () => DecodeMode.hwPlus);
+    } catch (_) {}
+  }
+
+  Future<void> set(DecodeMode m) async {
+    mode.value = m;
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString(_key, m.name);
+    } catch (_) {}
+  }
+}
+
 class ProgressStore {
   ProgressStore._();
   static final ProgressStore instance = ProgressStore._();
@@ -728,6 +764,7 @@ Future<void> main() async {
       kIsTv ? _landscapeOnly : _allOrientations);
   await ProgressStore.instance.init();
   await WatchlistStore.instance.init();
+  await DecodeSettings.instance.init();
   runApp(const App());
 }
 
@@ -1067,6 +1104,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                             ? null
                             : () => setState(() => selecting = true),
                       ),
+                      _decodeMenu(),
                     ],
                   ),
             floatingActionButton: selecting
@@ -1081,6 +1119,32 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           ),
         );
       },
+    );
+  }
+
+  Widget _decodeMenu() {
+    return ValueListenableBuilder<DecodeMode>(
+      valueListenable: DecodeSettings.instance.mode,
+      builder: (_, cur, __) => PopupMenuButton<DecodeMode>(
+        icon: const Icon(Icons.memory),
+        tooltip: 'Yürütme biçimi',
+        initialValue: cur,
+        onSelected: (m) {
+          DecodeSettings.instance.set(m);
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Yürütme biçimi: ${m.label}'),
+            duration: const Duration(seconds: 2),
+          ));
+        },
+        itemBuilder: (_) => [
+          for (final m in DecodeMode.values)
+            CheckedPopupMenuItem<DecodeMode>(
+              value: m,
+              checked: m == cur,
+              child: Text(m.label),
+            ),
+        ],
+      ),
     );
   }
 
@@ -1726,7 +1790,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         bufferSize: (kIsTv ? 32 : 64) * 1024 * 1024,
       ),
     );
-    controller = VideoController(player);
+    final dm = DecodeSettings.instance.mode.value;
+    controller = VideoController(
+      player,
+      configuration: VideoControllerConfiguration(
+        enableHardwareAcceleration: dm != DecodeMode.sw,
+      ),
+    );
     if (!kIsTv) _initLevels();
     _init();
   }
@@ -1743,6 +1813,12 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Future<void> _init() async {
     final platform = player.platform;
+    if (platform is NativePlayer) {
+      try {
+        await platform.setProperty(
+            'hwdec', DecodeSettings.instance.mode.value.hwdec);
+      } catch (_) {}
+    }
     if (widget.cfg.allowInsecure && platform is NativePlayer) {
       await platform.setProperty('tls-verify', 'no');
     }
