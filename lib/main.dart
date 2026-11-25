@@ -800,11 +800,15 @@ Future<void> main() async {
 /// Kumanda SOL tusu (her ekranda): kisa basis = satiri sec / secimi kaldir,
 /// basili tutma = [onHold] (izleme listesinde listeden cikar, ekleme
 /// ekraninda izleme listesine ekle).
+/// [onSelect]: kumandanin OK / secim tusu; yalnizca secim varken verilir ve
+/// secilenleri dogrudan ekler / listeden cikarir (yoksa tus normal calisir).
 class _DpadSelect extends StatefulWidget {
   final VoidCallback? onTap;
   final VoidCallback? onHold;
+  final VoidCallback? onSelect;
   final Widget child;
-  const _DpadSelect({this.onTap, this.onHold, required this.child});
+  const _DpadSelect(
+      {this.onTap, this.onHold, this.onSelect, required this.child});
 
   @override
   State<_DpadSelect> createState() => _DpadSelectState();
@@ -815,12 +819,26 @@ class _DpadSelectState extends State<_DpadSelect> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.onTap == null && widget.onHold == null) return widget.child;
+    if (widget.onTap == null &&
+        widget.onHold == null &&
+        widget.onSelect == null) {
+      return widget.child;
+    }
     return Focus(
       canRequestFocus: false,
       skipTraversal: true,
       onKeyEvent: (node, e) {
-        if (e.logicalKey != LogicalKeyboardKey.arrowLeft) {
+        final k = e.logicalKey;
+        if (widget.onSelect != null &&
+            (k == LogicalKeyboardKey.select ||
+                k == LogicalKeyboardKey.enter ||
+                k == LogicalKeyboardKey.numpadEnter ||
+                k == LogicalKeyboardKey.gameButtonA)) {
+          if (e is KeyDownEvent) widget.onSelect!();
+          return KeyEventResult.handled;
+        }
+        if (k != LogicalKeyboardKey.arrowLeft ||
+            (widget.onTap == null && widget.onHold == null)) {
           return KeyEventResult.ignored;
         }
         if (e is KeyDownEvent) {
@@ -1049,30 +1067,25 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
             if (!didPop) _exitSelect();
           },
           child: Scaffold(
-            appBar: selecting
-                ? AppBar(
-                    leading: IconButton(
-                      icon: const Icon(Icons.close),
-                      tooltip: 'Seçimi temizle',
-                      onPressed: _exitSelect,
-                    ),
-                    title: Text('$_selCount seçili'),
-                    actions: [
-                      if (selItems.isNotEmpty)
-                        IconButton(
-                          icon: const Icon(Icons.drive_file_move_outline),
-                          tooltip: 'Taşı',
-                          onPressed: _moveSelected,
-                        ),
-                      IconButton(
-                        icon: const Icon(Icons.playlist_remove),
-                        tooltip: 'Listeden çıkar',
-                        onPressed: _removeSelected,
-                      ),
-                    ],
-                  )
-                : AppBar(
-                    title: Row(
+            appBar: AppBar(
+              automaticallyImplyLeading: false,
+              // Klasor icinde geri tusu yerine "listeden cikar" ikonu
+              leading: !inRoot
+                  ? IconButton(
+                      icon: const Icon(Icons.playlist_remove),
+                      tooltip: 'Listeden çıkar',
+                      onPressed: selecting ? _removeSelected : null,
+                    )
+                  : (selecting
+                      ? IconButton(
+                          icon: const Icon(Icons.close),
+                          tooltip: 'Seçimi temizle',
+                          onPressed: _exitSelect,
+                        )
+                      : null),
+              title: selecting
+                  ? Text('$_selCount seçili')
+                  : Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Flexible(
@@ -1089,7 +1102,27 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                         ),
                       ],
                     ),
+              actions: [
+                if (selecting && !inRoot)
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    tooltip: 'Seçimi temizle',
+                    onPressed: _exitSelect,
                   ),
+                if (selecting && selItems.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.drive_file_move_outline),
+                    tooltip: 'Taşı',
+                    onPressed: _moveSelected,
+                  ),
+                if (selecting && inRoot)
+                  IconButton(
+                    icon: const Icon(Icons.playlist_remove),
+                    tooltip: 'Listeden çıkar',
+                    onPressed: _removeSelected,
+                  ),
+              ],
+            ),
             body: empty ? _emptyView() : _list(folders, its),
           ),
         );
@@ -1124,6 +1157,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           _DpadSelect(
             onTap: () => _toggleFolder(f.id),
             onHold: () => _holdFolder(f.id),
+            onSelect: selecting ? _removeSelected : null,
             child: ListTile(
               selected: selFolders.contains(f.id),
               selectedTileColor: _selColor,
@@ -1162,6 +1196,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           _DpadSelect(
             onTap: () => _toggleItem(w.item.key),
             onHold: () => _holdItem(w.item.key),
+            onSelect: selecting ? _removeSelected : null,
             child: ListTile(
               selected: selItems.contains(w.item.key),
               selectedTileColor: _selColor,
@@ -1358,30 +1393,30 @@ class _BrowserScreenState extends State<BrowserScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () {
-              if (stack.length > 1) {
-                _up();
-              } else {
-                Navigator.of(context).maybePop();
-              }
-            },
-          ),
+          automaticallyImplyLeading: false,
+          // Ekleme ekraninda geri tusu yok: yerinde "Listeme ekle" tusu
+          leading: widget.selectMode
+              ? IconButton(
+                  icon: const Icon(Icons.playlist_add),
+                  tooltip: 'Listeme ekle',
+                  onPressed: selected.isEmpty ? null : _addSelected,
+                )
+              : IconButton(
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: () {
+                    if (stack.length > 1) {
+                      _up();
+                    } else {
+                      Navigator.of(context).maybePop();
+                    }
+                  },
+                ),
           title: Text(
             widget.selectMode && selected.isNotEmpty
                 ? '${selected.length} seçili'
                 : _title,
             overflow: TextOverflow.ellipsis,
           ),
-          actions: [
-            if (widget.selectMode)
-              IconButton(
-                icon: const Icon(Icons.playlist_add),
-                tooltip: 'Listeme ekle',
-                onPressed: selected.isEmpty ? null : _addSelected,
-              ),
-          ],
         ),
         body: _body(),
       ),
@@ -1463,6 +1498,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
     return _DpadSelect(
       onTap: widget.selectMode ? () => _toggle(it) : null,
       onHold: widget.selectMode ? () => _holdAdd(it) : null,
+      onSelect: widget.selectMode && selected.isNotEmpty ? _addSelected : null,
       child: ListTile(
         selected: sel,
         selectedTileColor: _selColor,
