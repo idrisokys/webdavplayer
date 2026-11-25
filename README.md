@@ -1,16 +1,12 @@
 # WebDAV Player
 
 libmpv (media_kit) tabanli sade WebDAV video oynatici.
-Iki ayri derleme uretilir:
+**Tek APK** (`webdav-player.apk`) hem Android TV (ARMv7, armeabi-v7a) hem mobil (ARMv8, arm64-v8a)
+cihazlarda calisir; APK iki mimariyi de icerir, cihaz kendi mimarisini secer. Android 10+ (API 29).
 
-| Surum | Mimari | Android | APK |
-|-------|--------|---------|-----|
-| Mobil | arm64-v8a (ARMv8) | 10+ (API 29) | `webdav-player-mobile-arm64-v8a.apk` |
-| Android TV | armeabi-v7a (ARMv7) | 12+ (API 31) | `webdav-player-tv-armeabi-v7a.apk` |
-
-TV surumu `--dart-define=TV=true` ile derlenir: yalnizca yatay, LEANBACK launcher + banner,
+TV modu acilista otomatik algilanir (cihaz Android TV / leanback ise): yalnizca yatay, LEANBACK launcher + banner,
 D-pad odak vurgusu, buyuk yazi, kucuk (32 MB) oynatma tamponu; "TV'yi kapat" ve
-parlaklik/ses hareketleri bu surumde yoktur.
+parlaklik/ses hareketleri TV'de yoktur. Telefon/tablette mobil arayuz acilir.
 
 - Sunucu sabit: `http://192.168.1.44:8080/` (lib/main.dart icinde `_serverUrl`)
 - Acilis ekrani: Izleme Listem. Sag alttaki "Listeme ekle" ile sunucudan klasor/video ekle
@@ -21,16 +17,16 @@ parlaklik/ses hareketleri bu surumde yoktur.
   (ilk seferde "tum dosyalara erisim" izni istenir).
   Cihaza takili **USB HDD / SD kart** da otomatik bulunur: hemen altinda **Harici diskten ekle** satiri cikar
   (`/storage/<UUID>`; ekrani asagi cekince yeniden taranir)
-- Izleme Listem'in en sagindaki **cip simgesi** = yurutme bicimi: Donanim (mediacodec) / **Donanim + (mediacodec-copy, varsayilan)** / Yazilim
+- Izleme Listem'in en sagindaki **cip simgesi** = yurutme bicimi: **Donanim (mediacodec, varsayilan)** / Donanim + (mediacodec-copy) / Yazilim
   (secim kalici; sonraki acilan videoda gecerli olur)
 - Klasor gezginlerinde varsayilan siralama **en yeni ustte** (sag ustteki siralama simgesinden degisir);
   Izleme Listem ise harf sirasindadir
-- Oynatici: ekrana **basili tut = 2.5x**; sol yarida yukari/asagi kaydir = **parlaklik**,
+- Oynatici: ekrana **basili tut = 3x**; sol yarida yukari/asagi kaydir = **parlaklik**,
   sag yarida = **ses**; alt cubukta durdur/oynat, gecen ve kalan sure, kaydirma cubugu
 - Uygulama ikonu: assets/icon.png (CI flutter_launcher_icons ile uretir)
 - Yatay / dikey ekran desteklenir (oynatici yataydir)
 - Kaldigin yerden devam; izlendi / yarim gostergesi
-- TV uzaktan kumanda: OK oynat/duraklat, sol/sag +-10 sn, yukari/asagi hiz
+- TV uzaktan kumanda: OK oynat/duraklat, sol +-10 sn, sag tus kisa basis +10 sn / **basili tut = 3x hizli oynat**, yukari/asagi hiz
 - TV listelerde: bir satirdayken **SAG tusu = sec / secimi kaldir** (secim modunu da kendisi acar); Izleme Listem'de klasor satirinda **SOL tusu = yeniden adlandir**; Geri tusu secim modundan cikar
 
 ## TV kapatma icin gerekenler

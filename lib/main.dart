@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -24,7 +25,7 @@ const _videoExt = {
 };
 const _watchedRatio = 0.95;
 const _speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
-const _holdSpeed = 2.5; // oynaticiya basili tutunca
+const _holdSpeed = 3.0; // oynaticiya / sag tusa basili tutunca
 const _deviceRoot = '/storage/emulated/0';
 const _landscapeOnly = [
   DeviceOrientation.landscapeLeft,
@@ -37,9 +38,21 @@ const _allOrientations = [
   DeviceOrientation.landscapeRight,
 ];
 
-// Derleme turu: --dart-define=TV=true  -> Android TV (armeabi-v7a, Android 12+)
-//                bayrak yok            -> Mobil (arm64-v8a, Android 10+)
-const bool kIsTv = bool.fromEnvironment('TV');
+// Tek APK: hem Android TV (armeabi-v7a) hem mobil (arm64-v8a) icin.
+// TV modu derleme bayragiyla degil, acilista cihazin Android TV (leanback)
+// olup olmadigina bakilarak belirlenir (bkz. _detectTv / main).
+bool kIsTv = false;
+
+Future<bool> _detectTv() async {
+  if (!Platform.isAndroid) return false;
+  try {
+    final f = (await DeviceInfoPlugin().androidInfo).systemFeatures;
+    return f.contains('android.software.leanback') ||
+        f.contains('android.hardware.type.television');
+  } catch (_) {
+    return false;
+  }
+}
 
 // TV (kapatilacak cihaz) - ADB ag hata ayiklama
 const _tvHost = '192.168.1.44';
@@ -136,14 +149,14 @@ class DecodeSettings {
   static final DecodeSettings instance = DecodeSettings._();
   static const _key = 'decode_mode';
 
-  final ValueNotifier<DecodeMode> mode = ValueNotifier(DecodeMode.hwPlus);
+  final ValueNotifier<DecodeMode> mode = ValueNotifier(DecodeMode.hw);
 
   Future<void> init() async {
     try {
       final p = await SharedPreferences.getInstance();
       final n = p.getString(_key);
       mode.value = DecodeMode.values
-          .firstWhere((m) => m.name == n, orElse: () => DecodeMode.hwPlus);
+          .firstWhere((m) => m.name == n, orElse: () => DecodeMode.hw);
     } catch (_) {}
   }
 
@@ -760,6 +773,7 @@ String? progressText(DavItem it) {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+  kIsTv = await _detectTv();
   await SystemChrome.setPreferredOrientations(
       kIsTv ? _landscapeOnly : _allOrientations);
   await ProgressStore.instance.init();
@@ -1892,6 +1906,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     WidgetsBinding.instance.removeObserver(this);
     SystemChrome.setPreferredOrientations(_allOrientations);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    _rightHoldTimer?.cancel();
     player.dispose();
     _focus.dispose();
     super.dispose();
@@ -1936,7 +1951,38 @@ class _PlayerScreenState extends State<PlayerScreen>
     _showControls();
   }
 
+  Timer? _rightHoldTimer;
+  bool _rightHeld = false;
+
+  bool _isRightKey(LogicalKeyboardKey k) =>
+      k == LogicalKeyboardKey.arrowRight ||
+      k == LogicalKeyboardKey.mediaFastForward;
+
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
+    final kk = e.logicalKey;
+    if (_isRightKey(kk)) {
+      if (e is KeyDownEvent) {
+        _rightHeld = false;
+        _rightHoldTimer?.cancel();
+        // 350 ms basili kalirsa 3x hizli oynat
+        _rightHoldTimer = Timer(const Duration(milliseconds: 350), () {
+          _rightHeld = true;
+          _startBoost();
+          _showControls();
+        });
+      } else if (e is KeyUpEvent) {
+        _rightHoldTimer?.cancel();
+        if (_rightHeld) {
+          _rightHeld = false;
+          _endBoost();
+        } else {
+          final shift = HardwareKeyboard.instance.isShiftPressed;
+          _seekBy(shift ? 60 : 10); // kisa basis: +10 sn
+        }
+        _showControls();
+      }
+      return KeyEventResult.handled; // KeyRepeat yoksayilir
+    }
     if (e is! KeyDownEvent && e is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
@@ -1954,9 +2000,6 @@ class _PlayerScreenState extends State<PlayerScreen>
     } else if (k == LogicalKeyboardKey.arrowLeft ||
         k == LogicalKeyboardKey.mediaRewind) {
       _seekBy(shift ? -60 : -10);
-    } else if (k == LogicalKeyboardKey.arrowRight ||
-        k == LogicalKeyboardKey.mediaFastForward) {
-      _seekBy(shift ? 60 : 10);
     } else if (k == LogicalKeyboardKey.arrowUp) {
       _changeSpeed(1);
     } else if (k == LogicalKeyboardKey.arrowDown) {
@@ -1982,7 +2025,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _seekBy(d.localPosition.dx < w / 2 ? -10 : 10);
   }
 
-  // ---- basili tut: 2.5x
+  // ---- basili tut: 3x
   void _startBoost() {
     if (_boost) return;
     _boost = true;
@@ -2093,7 +2136,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               children: [
                 Icon(Icons.fast_forward, color: Colors.white, size: 20),
                 SizedBox(width: 6),
-                Text('2.5x',
+                Text('3x',
                     style: TextStyle(color: Colors.white, fontSize: 15)),
               ],
             ),
