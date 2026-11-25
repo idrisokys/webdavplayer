@@ -435,9 +435,12 @@ class WatchlistStore extends ChangeNotifier {
   late SharedPreferences _p;
   final List<WlFolder> folders = [];
   final List<WlItem> items = [];
+  // Klasor icinde gizlenen videolar (anahtar listesi, kalici)
+  final Set<String> hidden = {};
 
   Future<void> init() async {
     _p = await SharedPreferences.getInstance();
+    hidden.addAll(_p.getStringList('hidden') ?? const <String>[]);
     final raw = _p.getString('watchlist');
     if (raw == null) return;
     try {
@@ -473,6 +476,23 @@ class WatchlistStore extends ChangeNotifier {
   }
 
   bool contains(String key) => items.any((e) => e.item.key == key);
+
+  Future<void> hide(Iterable<String> keys) async {
+    hidden.addAll(keys);
+    await _p.setStringList('hidden', hidden.toList());
+  }
+
+  /// Bir klasor listeden cikinca icindeki gizlemeler de sifirlanir.
+  Future<void> _unhideUnder(Iterable<String> folderKeys) async {
+    final before = hidden.length;
+    for (final k in folderKeys) {
+      final prefix = k.endsWith('/') ? k : '$k/';
+      hidden.removeWhere((h) => h.startsWith(prefix));
+    }
+    if (hidden.length != before) {
+      await _p.setStringList('hidden', hidden.toList());
+    }
+  }
 
   /// Izleme listesi: harf sirasi (Turkce, dogal siralama).
   List<WlItem> itemsIn(String? folder) => items
@@ -541,6 +561,7 @@ class WatchlistStore extends ChangeNotifier {
 
   Future<void> removeItem(String key) async {
     items.removeWhere((e) => e.item.key == key);
+    await _unhideUnder([key]);
     await _save();
   }
 
@@ -553,6 +574,7 @@ class WatchlistStore extends ChangeNotifier {
 
   Future<void> removeItems(Set<String> keys) async {
     items.removeWhere((e) => keys.contains(e.item.key));
+    await _unhideUnder(keys);
     await _save();
   }
 
@@ -1276,7 +1298,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
       }
       if (!mounted) return;
       setState(() {
-        items = sortItems(r, sort);
+        final hid = WatchlistStore.instance.hidden;
+        items = sortItems(
+            widget.selectMode
+                ? r
+                : r.where((i) => !hid.contains(i.key)).toList(),
+            sort);
         loading = false;
       });
     } catch (e) {
@@ -1329,20 +1356,24 @@ class _BrowserScreenState extends State<BrowserScreen> {
     await _addSelected();
   }
 
-  // Izleme listesinden acilan klasorde: secilenleri listeden cikar;
-  // secim yoksa acik olan klasorun kendisini listeden cikarip geri don.
+  // Izleme listesinden acilan klasorde: secilen videolari gizle
+  // (sunucudaki dosya silinmez); secim yoksa acik klasorun kendisini
+  // listeden cikarip geri don (gizlemeler de sifirlanir).
   Future<void> _removeFromList() async {
     final wl = WatchlistStore.instance;
     if (selected.isNotEmpty) {
-      final keys = selected.keys.where(wl.contains).toSet();
-      if (keys.isNotEmpty) await wl.removeItems(keys);
+      final keys = selected.keys.toSet();
+      final inList = keys.where(wl.contains).toSet();
+      if (inList.isNotEmpty) await wl.removeItems(inList);
+      await wl.hide(keys);
       if (!mounted) return;
+      setState(() {
+        items = items.where((i) => !keys.contains(i.key)).toList();
+        selected.clear();
+      });
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(keys.isEmpty
-            ? 'Seçilenler izleme listesinde değil'
-            : '${keys.length} öğe listeden çıkarıldı'),
+        content: Text('${keys.length} öğe gizlendi'),
       ));
-      setState(selected.clear);
       return;
     }
     final k = widget.listKey;
@@ -1397,8 +1428,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   onPressed: selected.isEmpty ? null : _addSelected,
                 )
               : IconButton(
-                  icon: const Icon(Icons.playlist_remove),
-                  tooltip: 'Listeden çıkar',
+                  icon: Icon(selected.isEmpty
+                      ? Icons.playlist_remove
+                      : Icons.visibility_off),
+                  tooltip: selected.isEmpty
+                      ? 'Klasörü listeden çıkar'
+                      : 'Seçilenleri gizle',
                   onPressed: _removeFromList,
                 ),
           title: Text(
