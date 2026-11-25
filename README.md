@@ -14,6 +14,7 @@ parlaklik/ses hareketleri TV'de yoktur. Telefon/tablette mobil arayuz acilir.
 - Izleme Listem: sag ustteki **Listeden cikar** dugmesi secilenleri listeden kaldirir (sunucudaki dosyalar silinmez)
 - Ekleme ekrani: sag ustteki **Listeme ekle** dugmesi secilenleri izleme listesine ekler; en yeni klasor ustte
 - **Kumanda SOL tusu (her ekranda)**: satiri sec / secimi kaldir; **SOL tusa basili tut** veya secim varken **OK tusu**: izleme listesinde secili satir(lar)i listeden cikarir, ekleme ekraninda izleme listesine ekler. Ekleme ekraninda geri tusu yerine sol ustte "Listeme ekle" tusu vardir; izleme listesinde klasor icinde geri tusu yerine "Listeden cikar" ikonu vardir (geri icin sistem geri tusu)
+- Izleme listesinden bir sunucu klasorune girince sol ustte geri yerine **Listeden cikar** ikonu: sol tusla satir sec, OK / ikon ile secilenleri listeden cikar (secim yoksa acik klasorun kendisini cikarir)
 - Sunucuya (WebDAV) ulasilamazsa hata gosterilmez
 - Yurutme bicimi her zaman **Donanim (mediacodec)**
 - Izleme Listem harf sirasindadir

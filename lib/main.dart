@@ -969,25 +969,10 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
 
   Future<void> _openDir(DavItem it) async {
     await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => BrowserScreen(start: it.uri, selectMode: false),
+      builder: (_) =>
+          BrowserScreen(start: it.uri, selectMode: false, listKey: it.key),
     ));
     if (mounted) setState(() {});
-  }
-
-  Future<void> _moveSelected() async {
-    if (selItems.isEmpty) return;
-    final c = await showFolderPicker(
-      context,
-      current: widget.folderId,
-      title: '${selItems.length} öğeyi taşı',
-    );
-    if (c == null) return;
-    final n = selItems.length;
-    await st.moveItems(Set.of(selItems), c.id);
-    if (!mounted) return;
-    _exitSelect();
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('$n öğe taşındı')));
   }
 
   Future<void> _removeSelected() async {
@@ -1069,20 +1054,15 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           child: Scaffold(
             appBar: AppBar(
               automaticallyImplyLeading: false,
-              // Klasor icinde geri tusu yerine "listeden cikar" ikonu
-              leading: !inRoot
+              // Solda "listeden cikar" ikonu (klasor icinde geri tusu yerine,
+              // ana listede secim varken); tasima / secimi iptal tusu yok
+              leading: (!inRoot || selecting)
                   ? IconButton(
                       icon: const Icon(Icons.playlist_remove),
                       tooltip: 'Listeden çıkar',
                       onPressed: selecting ? _removeSelected : null,
                     )
-                  : (selecting
-                      ? IconButton(
-                          icon: const Icon(Icons.close),
-                          tooltip: 'Seçimi temizle',
-                          onPressed: _exitSelect,
-                        )
-                      : null),
+                  : null,
               title: selecting
                   ? Text('$_selCount seçili')
                   : Row(
@@ -1102,26 +1082,6 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                         ),
                       ],
                     ),
-              actions: [
-                if (selecting && !inRoot)
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    tooltip: 'Seçimi temizle',
-                    onPressed: _exitSelect,
-                  ),
-                if (selecting && selItems.isNotEmpty)
-                  IconButton(
-                    icon: const Icon(Icons.drive_file_move_outline),
-                    tooltip: 'Taşı',
-                    onPressed: _moveSelected,
-                  ),
-                if (selecting && inRoot)
-                  IconButton(
-                    icon: const Icon(Icons.playlist_remove),
-                    tooltip: 'Listeden çıkar',
-                    onPressed: _removeSelected,
-                  ),
-              ],
             ),
             body: empty ? _emptyView() : _list(folders, its),
           ),
@@ -1226,11 +1186,13 @@ class BrowserScreen extends StatefulWidget {
   final Uri start;
   final bool selectMode; // true: listeye ekleme ekrani
   final String? targetFolder; // ekleme hedefi (null = ana liste)
+  final String? listKey; // izleme listesinden acildiysa o klasorun anahtari
   const BrowserScreen({
     super.key,
     required this.start,
     required this.selectMode,
     this.targetFolder,
+    this.listKey,
   });
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
@@ -1367,6 +1329,34 @@ class _BrowserScreenState extends State<BrowserScreen> {
     await _addSelected();
   }
 
+  // Izleme listesinden acilan klasorde: secilenleri listeden cikar;
+  // secim yoksa acik olan klasorun kendisini listeden cikarip geri don.
+  Future<void> _removeFromList() async {
+    final wl = WatchlistStore.instance;
+    if (selected.isNotEmpty) {
+      final keys = selected.keys.where(wl.contains).toSet();
+      if (keys.isNotEmpty) await wl.removeItems(keys);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(keys.isEmpty
+            ? 'Seçilenler izleme listesinde değil'
+            : '${keys.length} öğe listeden çıkarıldı'),
+      ));
+      setState(selected.clear);
+      return;
+    }
+    final k = widget.listKey;
+    if (k == null) return;
+    await wl.removeItem(k);
+    if (!mounted) return;
+    Navigator.of(context).maybePop();
+  }
+
+  Future<void> _holdRemove(DavItem it) async {
+    selected[it.key] = it;
+    await _removeFromList();
+  }
+
   Future<void> _enter(DavItem it) async {
     stack.add(it.uri);
     await _load();
@@ -1387,9 +1377,14 @@ class _BrowserScreenState extends State<BrowserScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: stack.length <= 1,
+      canPop: stack.length <= 1 && selected.isEmpty,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _up();
+        if (didPop) return;
+        if (selected.isNotEmpty) {
+          setState(selected.clear);
+        } else {
+          _up();
+        }
       },
       child: Scaffold(
         appBar: AppBar(
@@ -1402,17 +1397,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   onPressed: selected.isEmpty ? null : _addSelected,
                 )
               : IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: () {
-                    if (stack.length > 1) {
-                      _up();
-                    } else {
-                      Navigator.of(context).maybePop();
-                    }
-                  },
+                  icon: const Icon(Icons.playlist_remove),
+                  tooltip: 'Listeden çıkar',
+                  onPressed: _removeFromList,
                 ),
           title: Text(
-            widget.selectMode && selected.isNotEmpty
+            selected.isNotEmpty
                 ? '${selected.length} seçili'
                 : _title,
             overflow: TextOverflow.ellipsis,
@@ -1496,9 +1486,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
     final sub = inList ? 'Listede' : '';
     final sel = selected.containsKey(it.key);
     return _DpadSelect(
-      onTap: widget.selectMode ? () => _toggle(it) : null,
-      onHold: widget.selectMode ? () => _holdAdd(it) : null,
-      onSelect: widget.selectMode && selected.isNotEmpty ? _addSelected : null,
+      onTap: () => _toggle(it),
+      onHold: () => widget.selectMode ? _holdAdd(it) : _holdRemove(it),
+      onSelect: selected.isEmpty
+          ? null
+          : (widget.selectMode ? _addSelected : _removeFromList),
       child: ListTile(
         selected: sel,
         selectedTileColor: _selColor,
@@ -1506,7 +1498,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
         title: nameWithPercent(it),
         subtitle: sub.isEmpty ? null : Text(sub),
         onTap: () {
-          if (it.isDir) {
+          if (!widget.selectMode && selected.isNotEmpty) {
+            _toggle(it);
+          } else if (it.isDir) {
             _enter(it);
           } else if (widget.selectMode) {
             _toggle(it);
@@ -1514,7 +1508,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
             _play(it);
           }
         },
-        onLongPress: widget.selectMode ? () => _toggle(it) : null,
+        onLongPress: () => _toggle(it),
       ),
     );
   }
