@@ -18,6 +18,23 @@ jobs:
         with:
           channel: stable
           cache: true
+      - name: "CMake 3.22.1 kur (indirme bozuk gelirse tekrar dene)"
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKM" ] || SDKM="$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -1)"
+          yes | "$SDKM" --licenses > /dev/null || true
+          ok=0
+          for i in 1 2 3 4; do
+            rm -rf "$ANDROID_HOME/cmake/3.22.1"
+            if "$SDKM" --install "cmake;3.22.1" && [ -x "$ANDROID_HOME/cmake/3.22.1/bin/cmake" ]; then
+              ok=1
+              break
+            fi
+            echo "CMake kurulumu basarisiz, tekrar deneniyor ($i)..."
+            sleep 10
+          done
+          [ "$ok" = 1 ] || exit 1
+          "$ANDROID_HOME/cmake/3.22.1/bin/cmake" --version
       - name: Android iskeletini uret
         run: flutter create --platforms=android --org com.example --project-name webdav_player .
       - name: TV banner uret
@@ -74,8 +91,12 @@ jobs:
         run: dart run flutter_launcher_icons
       - name: "Tek APK (armeabi-v7a + arm64-v8a)"
         run: |
-          flutter build apk --release \
-            --target-platform android-arm,android-arm64
+          for i in 1 2; do
+            flutter build apk --release \
+              --target-platform android-arm,android-arm64 && exit 0
+            echo "Derleme basarisiz, tekrar deneniyor ($i)..."
+          done
+          exit 1
       - name: Adlandir
         run: |
           mkdir -p out
