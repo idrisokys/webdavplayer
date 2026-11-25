@@ -141,6 +141,7 @@ enum DecodeMode {
 class DecodeSettings {
   DecodeSettings._();
   static final DecodeSettings instance = DecodeSettings._();
+  static const _key = 'decode_mode';
 
   final ValueNotifier<DecodeMode> mode = ValueNotifier(DecodeMode.hw);
 
